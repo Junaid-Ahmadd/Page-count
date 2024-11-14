@@ -1,16 +1,15 @@
-// import express from 'express';
-//import * as cheerio from 'cheerio';
-//import axios from 'axios';
 const express = require('express');
 const cheerio = require('cheerio');
 const axios = require('axios');
 const xml2js = require('xml2js');
 const playwright = require('playwright');
+const path = require('path');
 
 const app = express();
 
 app.use(express.json());
 app.use(express.static('public'));
+app.use('/screenshots', express.static('screenshots')); // Serve screenshots directory
 app.use(express.urlencoded({ extended: true }));
 
 // Serve the HTML form
@@ -21,12 +20,79 @@ app.get('/', (req, res) => {
         <head>
             <title>Website Crawler</title>
             <style>
-                body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-                .container { margin-top: 20px; }
-                #urlInput { width: 100%; padding: 10px; margin-bottom: 10px; }
-                #submitBtn { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; }
-                #results { margin-top: 20px; white-space: pre-wrap; }
-                .error { color: red; }
+                body { 
+                    font-family: Arial, sans-serif; 
+                    max-width: 1200px; 
+                    margin: 0 auto; 
+                    padding: 20px; 
+                }
+                .container { 
+                    margin-top: 20px; 
+                }
+                #urlInput { 
+                    width: 70%; 
+                    padding: 10px; 
+                    margin-bottom: 10px; 
+                }
+                #submitBtn { 
+                    padding: 10px 20px; 
+                    background: #4CAF50; 
+                    color: white; 
+                    border: none; 
+                    cursor: pointer; 
+                }
+                #submitBtn:disabled {
+                    background: #cccccc;
+                    cursor: not-allowed;
+                }
+                #results { 
+                    margin-top: 20px;
+                }
+                .error { 
+                    color: red; 
+                }
+                .loading {
+                    text-align: center;
+                    padding: 20px;
+                    font-style: italic;
+                }
+                .grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+                    gap: 20px;
+                    margin-top: 20px;
+                }
+                .card {
+                    border: 1px solid #ddd;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    background: white;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }
+                .card-image {
+                    width: 100%;
+                    height: 200px;
+                    object-fit: cover;
+                    border-bottom: 1px solid #eee;
+                }
+                .card-content {
+                    padding: 15px;
+                }
+                .card-link {
+                    color: #0066cc;
+                    text-decoration: none;
+                    word-break: break-all;
+                    font-size: 14px;
+                }
+                .card-link:hover {
+                    text-decoration: underline;
+                }
+                .stats {
+                    margin-bottom: 20px;
+                    padding: 10px;
+                    background: #f5f5f5;
+                    border-radius: 4px;
+                }
             </style>
         </head>
         <body>
@@ -50,7 +116,7 @@ app.get('/', (req, res) => {
 
                     try {
                         submitBtn.disabled = true;
-                        results.innerHTML = '<p>Crawling, please wait...</p>';
+                        results.innerHTML = '<div class="loading">Crawling website and taking screenshots...<br>This may take a few minutes depending on the number of pages.</div>';
 
                         const response = await fetch('/crawl', {
                             method: 'POST',
@@ -59,11 +125,32 @@ app.get('/', (req, res) => {
                         });
 
                         const data = await response.json();
-                        const linksList = data.uniqueLinks.map(link => '- ' + link).join('\\n');
-                        results.innerHTML = 
-                            '<h3>Unique Links Found:</h3>' +
-                            '<pre>' + linksList + '</pre>' +
-                            '<p>Total Unique Links: ' + data.uniqueLinks.length + '</p>';
+                        
+                        // Display results in a grid layout
+                        let html = \`
+                            <div class="stats">
+                                Total pages found: \${data.results.length}
+                            </div>
+                            <div class="grid">\`;
+
+                        data.results.forEach(result => {
+                            html += \`
+                                <div class="card">
+                                    <img 
+                                        class="card-image" 
+                                        src="/screenshots/\${result.screenshot}" 
+                                        alt="Screenshot of \${result.url}"
+                                        onerror="this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'300\\' height=\\'200\\' viewBox=\\'0 0 300 200\\'%3E%3Crect width=\\'300\\' height=\\'200\\' fill=\\'%23eee\\'/%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' text-anchor=\\'middle\\' fill=\\'%23999\\' font-family=\\'Arial\\' font-size=\\'16\\'%3EScreenshot failed to load%3C/text%3E%3C/svg%3E'"
+                                    >
+                                    <div class="card-content">
+                                        <a href="\${result.url}" target="_blank" class="card-link">\${result.url}</a>
+                                    </div>
+                                </div>
+                            \`;
+                        });
+
+                        html += '</div>';
+                        results.innerHTML = html;
                     } catch (error) {
                         results.innerHTML = '<p class="error">Error: ' + error.message + '</p>';
                     } finally {
@@ -197,7 +284,7 @@ async function takeScreenshot(url, filename) {
 module.exports = { takeScreenshot };
 
 
-// Main Crawling Endpoint
+// Modified crawl endpoint
 app.post('/crawl', async (req, res) => {
     const { url } = req.body;
     const baseUrl = new URL(url).origin;
@@ -210,16 +297,22 @@ app.post('/crawl', async (req, res) => {
     // Combine and deduplicate all discovered links
     const allLinks = Array.from(new Set([...htmlLinks, ...sitemapLinks]));
 
-    // Take screenshots of all discovered links
+    // Take screenshots and create result objects
+    const results = [];
     for (let i = 0; i < allLinks.length; i++) {
         const link = allLinks[i];
-        await takeScreenshot(link, `screenshot-${i}`); // Screenshot filenames like 'screenshot-0.png', 'screenshot-1.png', etc.
+        const screenshotFilename = `screenshot-${i}.png`;
+        await takeScreenshot(link, `screenshot-${i}`);
+        
+        results.push({
+            url: link,
+            screenshot: screenshotFilename
+        });
     }
 
-    // Respond with the list of unique links and a message
-    res.json({ uniqueLinks: allLinks, message: "Screenshots have been taken for all discovered links." });
+    // Respond with the results array containing both links and screenshot paths
+    res.json({ results, message: "Crawl completed successfully" });
 });
-
 
 // Start Server
 const port = process.env.PORT || 3000;
