@@ -254,6 +254,10 @@ async function crawlHTML(baseUrl, startUrl, visitedLinks) {
 }
 
 
+const playwright = require('playwright');
+const fs = require('fs');
+const path = require('path');
+
 // Function to take a full-page screenshot with error handling
 const takeScreenshot = async (url, filename) => {
     let browser;
