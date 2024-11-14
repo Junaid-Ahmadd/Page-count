@@ -4,13 +4,12 @@
 const express = require('express');
 const cheerio = require('cheerio');
 const axios = require('axios');
-
+const xml2js = require('xml2js');
 
 const app = express();
 
-// Middleware
 app.use(express.json());
-// app.use(express.static('public'));
+app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 
 // Serve the HTML form
@@ -25,10 +24,8 @@ app.get('/', (req, res) => {
                 .container { margin-top: 20px; }
                 #urlInput { width: 100%; padding: 10px; margin-bottom: 10px; }
                 #submitBtn { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; }
-                #submitBtn:disabled { background: #cccccc; }
                 #results { margin-top: 20px; white-space: pre-wrap; }
                 .error { color: red; }
-                .loading { color: #666; }
             </style>
         </head>
         <body>
@@ -52,7 +49,7 @@ app.get('/', (req, res) => {
 
                     try {
                         submitBtn.disabled = true;
-                        results.innerHTML = '<p class="loading">Crawling website, please wait...</p>';
+                        results.innerHTML = '<p>Crawling, please wait...</p>';
 
                         const response = await fetch('/crawl', {
                             method: 'POST',
@@ -61,16 +58,11 @@ app.get('/', (req, res) => {
                         });
 
                         const data = await response.json();
-
-                        if (data.error) {
-                            results.innerHTML = '<p class="error">Error: ' + data.error + '</p>';
-                        } else {
-                            const linksList = data.links.map(link => '- ' + link).join('\\n');
-                            results.innerHTML = 
-                                '<h3>Results:</h3>' +
-                                '<p>Total pages found: ' + data.links.length + '</p>' +
-                                '<pre>' + linksList + '</pre>';
-                        }
+                        const linksList = data.uniqueLinks.map(link => '- ' + link).join('\\n');
+                        results.innerHTML = 
+                            '<h3>Unique Links Found:</h3>' +
+                            '<pre>' + linksList + '</pre>' +
+                            '<p>Total Unique Links: ' + data.uniqueLinks.length + '</p>';
                     } catch (error) {
                         results.innerHTML = '<p class="error">Error: ' + error.message + '</p>';
                     } finally {
@@ -83,145 +75,109 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Crawling endpoint
-app.post('/crawl', async (req, res) => {
-    try {
-        const { url } = req.body;
+// Helper function to filter unwanted links
+function isValidPageLink(href) {
+    const nonPageExtensions = [
+        '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp',
+        '.mp4', '.mp3', '.avi', '.mov', '.wmv', '.zip', '.rar', 
+        '.exe', '.dmg', '.css', '.js', '.json', '.xml', '.csv', 
+        '.xlsx', '.doc', '.docx', '.ppt', '.pptx', '.ico'
+    ];
 
-        if (!url) {
-            return res.status(400).json({ error: 'URL is required' });
-        }
-
-        // Validate URL format
-        try {
-            new URL(url);
-        } catch (error) {
-            return res.status(400).json({ error: 'Invalid URL format' });
-        }
-
-        const visited = new Set();
-        const links = new Set();
-        const baseUrl = new URL(url).origin;
-
-        let homePageVisited = false; // Flag to track if the home page has been visited
-
-        // Helper function to filter out obvious non-page links
-        function isPageLink(href) {
-            const nonPageExtensions = [
-                '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp',
-                '.mp4', '.mp3', '.avi', '.mov', '.wmv', '.zip', '.rar', 
-                '.exe', '.dmg', '.css', '.js', '.json', '.xml', '.csv', 
-                '.xlsx', '.doc', '.docx', '.ppt', '.pptx', '.ico'
-            ];
-
-            // Exclude empty links, JavaScript void links, and links starting with '#'
-            if (!href || href.startsWith('#') || href.startsWith('javascript:void(0)')) {
-                return false;
-            }
-
-            // Exclude links containing fragments (e.g., '#respond', '#section')
-            if (href.includes('#')) {
-                return false;
-            }
-
-            // Exclude links with paths like '/cdn-cgi/' or email protection links
-            if (href.includes('/cdn-cgi/') || href.includes('/l/email-protection')) {
-                return false;
-            }
-
-            // Check if the URL has any non-page extensions
-            if (nonPageExtensions.some(ext => href.toLowerCase().includes(ext))) {
-                return false;
-            }
-
-            return true;
-        }
-
-        // Crawl function
-        async function crawlPage(pageUrl) {
-            // Skip if the page is already visited or if we've reached the link limit
-            if (visited.has(pageUrl) || links.size >= 100) {
-                return;
-            }
-
-            console.log(`Crawling: ${pageUrl}`);
-            visited.add(pageUrl);
-
-            try {
-                const response = await axios.get(pageUrl, { 
-                    timeout: 100000,
-                    headers: { 'User-Agent': 'Mozilla/5.0' },
-                    maxRedirects: 0,  // Disable automatic following of redirects
-                    validateStatus: status => status < 400 || status === 302 // Accept 302 redirects
-                });
-
-                // Check if the page was redirected (301 or 302 status) to the home page
-                const finalUrl = response.request.res.responseUrl || pageUrl;
-
-                // If the page is the home page and we already visited it, skip
-                if (finalUrl === baseUrl || finalUrl === `${baseUrl}/`) {
-                    if (homePageVisited) {
-                        console.log(`Skipping already visited home page: ${finalUrl}`);
-                        return;
-                    }
-                    homePageVisited = true;  // Mark home page as visited
-                }
-
-                // If the page is redirected to the home page, we skip it
-                if (finalUrl.startsWith(baseUrl) && finalUrl !== pageUrl) {
-                    console.log(`Skipping redirected link to home page: ${finalUrl}`);
-                    return;
-                }
-
-                const $ = cheerio.load(response.data);
-
-                $('a').each((i, element) => {
-                    let href = $(element).attr('href');
-                    if (!href) return;
-
-                    try {
-                        const absoluteUrl = new URL(href, baseUrl).href;
-                        // Only include URLs from the same domain and valid page links
-                        if (absoluteUrl.startsWith(baseUrl) && isPageLink(absoluteUrl)) {
-                            links.add(absoluteUrl);
-                        }
-
-                    } catch (error) {
-                        console.error(`Invalid URL found: ${href}, Error: ${error.message}`);
-                    }
-                });
-
-                // Wait a bit to avoid overwhelming the server
-                await new Promise(resolve => setTimeout(resolve, 1000));
-
-            } catch (error) {
-                // Handle redirects (301/302), skip these URLs
-                if (error.response && (error.response.status === 301 || error.response.status === 302)) {
-                    console.log(`Detected redirect for ${pageUrl}, skipping.`);
-                } else {
-                    console.error(`Error crawling ${pageUrl}: ${error.message}`);
-                }
-            }
-        }
-
-        // Start crawling from the initial URL
-        await crawlPage(url);
-
-        // Crawl discovered links
-        const promises = Array.from(links).map(link => crawlPage(link));
-        await Promise.all(promises);
-
-        res.json({ links: Array.from(links) });
-
-    } catch (error) {
-        console.error('Crawling error:', error);
-        res.status(500).json({ error: 'Failed to crawl website' });
+    // Exclude empty links, JavaScript links, and fragment links
+    if (!href || href.startsWith('#') || href.startsWith('javascript:void(0)')) {
+        return false;
     }
+
+    // Exclude links containing fragments (e.g., '#section')
+    if (href.includes('#')) {
+        return false;
+    }
+
+    // Check for non-page extensions
+    if (nonPageExtensions.some(ext => href.toLowerCase().includes(ext))) {
+        return false;
+    }
+
+    return true;
+}
+
+// Helper function to fetch sitemap links
+async function fetchSitemap(baseUrl) {
+    const sitemapLinks = new Set();
+    try {
+        const response = await axios.get(`${baseUrl}/sitemap.xml`);
+        const parsedXml = await xml2js.parseStringPromise(response.data);
+        const urlSet = parsedXml?.urlset?.url || [];
+        for (const urlObj of urlSet) {
+            if (urlObj?.loc) sitemapLinks.add(urlObj.loc[0]);
+        }
+
+        const sitemapIndex = parsedXml?.sitemapindex?.sitemap || [];
+        for (const sitemap of sitemapIndex) {
+            const loc = sitemap?.loc[0];
+            if (loc) {
+                try {
+                    const nestedResponse = await axios.get(loc);
+                    const nestedXml = await xml2js.parseStringPromise(nestedResponse.data);
+                    const nestedUrls = nestedXml?.urlset?.url || [];
+                    for (const nestedUrl of nestedUrls) {
+                        if (nestedUrl?.loc) sitemapLinks.add(nestedUrl.loc[0]);
+                    }
+                } catch {
+                    console.error(`Failed to fetch nested sitemap: ${loc}`);
+                }
+            }
+        }
+    } catch (error) {
+        console.error(`Failed to fetch sitemap: ${error.message}`);
+    }
+    return Array.from(sitemapLinks);
+}
+
+// Helper function for HTML link extraction
+async function crawlHTML(baseUrl, startUrl, visitedLinks) {
+    const htmlLinks = new Set();
+
+    async function crawlPage(url) {
+        if (visitedLinks.has(url)) return;
+        visitedLinks.add(url);
+
+        try {
+            const response = await axios.get(url);
+            const $ = cheerio.load(response.data);
+
+            $('a').each((_, element) => {
+                const href = $(element).attr('href');
+                if (isValidPageLink(href)) {
+                    const absoluteUrl = new URL(href, baseUrl).href;
+                    if (absoluteUrl.startsWith(baseUrl)) {
+                        htmlLinks.add(absoluteUrl);
+                    }
+                }
+            });
+        } catch (error) {
+            console.error(`Error fetching page: ${url}, ${error.message}`);
+        }
+    }
+
+    await crawlPage(startUrl);
+    return Array.from(htmlLinks);
+}
+
+// Main Crawling Endpoint
+app.post('/crawl', async (req, res) => {
+    const { url } = req.body;
+    const baseUrl = new URL(url).origin;
+
+    const visitedLinks = new Set();
+    const htmlLinks = await crawlHTML(baseUrl, url, visitedLinks);
+    const sitemapLinks = await fetchSitemap(baseUrl);
+
+    const allLinks = new Set([...htmlLinks, ...sitemapLinks]);
+    res.json({ uniqueLinks: Array.from(allLinks) });
 });
 
-
-// Start the server
+// Start Server
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}`);
-});
+app.listen(port, () => console.log(`Server running at http://localhost:${port}`));
