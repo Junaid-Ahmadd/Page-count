@@ -5,6 +5,7 @@ const express = require('express');
 const cheerio = require('cheerio');
 const axios = require('axios');
 const xml2js = require('xml2js');
+const playwright = require('playwright');
 
 const app = express();
 
@@ -165,18 +166,60 @@ async function crawlHTML(baseUrl, startUrl, visitedLinks) {
     return Array.from(htmlLinks);
 }
 
+
+// Function to take a full-page screenshot of a given URL
+async function takeScreenshot(url, filename) {
+  try {
+    // Launch browser
+    const browser = await playwright.chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    // Navigate to the URL
+    await page.goto(url, { waitUntil: 'networkidle' });
+
+    // Take a full-page screenshot
+    await page.screenshot({
+      path: `screenshots/${filename}.png`,
+      fullPage: true
+    });
+
+    console.log(`Screenshot saved for ${url} as ${filename}.png`);
+
+    // Close the browser
+    await browser.close();
+  } catch (error) {
+    console.error(`Failed to take screenshot for ${url}:`, error);
+  }
+}
+
+// Export the function for use in other parts of your app
+module.exports = { takeScreenshot };
+
+
 // Main Crawling Endpoint
 app.post('/crawl', async (req, res) => {
     const { url } = req.body;
     const baseUrl = new URL(url).origin;
 
+    // Extract links from HTML and Sitemap
     const visitedLinks = new Set();
     const htmlLinks = await crawlHTML(baseUrl, url, visitedLinks);
     const sitemapLinks = await fetchSitemap(baseUrl);
 
-    const allLinks = new Set([...htmlLinks, ...sitemapLinks]);
-    res.json({ uniqueLinks: Array.from(allLinks) });
+    // Combine and deduplicate all discovered links
+    const allLinks = Array.from(new Set([...htmlLinks, ...sitemapLinks]));
+
+    // Take screenshots of all discovered links
+    for (let i = 0; i < allLinks.length; i++) {
+        const link = allLinks[i];
+        await takeScreenshot(link, `screenshot-${i}`); // Screenshot filenames like 'screenshot-0.png', 'screenshot-1.png', etc.
+    }
+
+    // Respond with the list of unique links and a message
+    res.json({ uniqueLinks: allLinks, message: "Screenshots have been taken for all discovered links." });
 });
+
 
 // Start Server
 const port = process.env.PORT || 3000;
