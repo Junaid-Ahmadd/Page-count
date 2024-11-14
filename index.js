@@ -254,63 +254,34 @@ async function crawlHTML(baseUrl, startUrl, visitedLinks) {
 }
 
 
-const playwright = require('playwright');
-const fs = require('fs');
-const path = require('path');
+// Function to take a full-page screenshot of a given URL
+async function takeScreenshot(url, filename) {
+  try {
+    // Launch browser
+    const browser = await playwright.chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
 
-// Function to take a full-page screenshot with error handling
-const takeScreenshot = async (url, filename) => {
-    let browser;
-    let page;
-    try {
-        // Launch the browser
-        console.log(`Launching browser for URL: ${url}`);
-        browser = await playwright.chromium.launch({ headless: true });
-        const context = await browser.newContext();
-        page = await context.newPage();
+    // Navigate to the URL
+    await page.goto(url, { waitUntil: 'networkidle' });
 
-        // Navigate to the URL and wait for the page to load
-        console.log(`Navigating to ${url}`);
-        await page.goto(url, { waitUntil: 'networkidle' });
+    // Take a full-page screenshot
+    await page.screenshot({
+      path: `screenshots/${filename}.png`,
+      fullPage: true
+    });
 
-        // Take a full-page screenshot
-        const screenshotPath = path.join(__dirname, 'screenshots', `${filename}.png`);
-        console.log(`Taking screenshot for ${url}`);
+    console.log(`Screenshot saved for ${url} as ${filename}.png`);
 
-        await page.screenshot({ path: screenshotPath, fullPage: true });
+    // Close the browser
+    await browser.close();
+  } catch (error) {
+    console.error(`Failed to take screenshot for ${url}:`, error);
+  }
+}
 
-        // Check if the file is saved
-        if (fs.existsSync(screenshotPath)) {
-            console.log(`Screenshot saved at ${screenshotPath}`);
-        } else {
-            throw new Error('Screenshot file was not saved correctly');
-        }
-
-        // Return the path to the screenshot
-        return screenshotPath;
-
-    } catch (error) {
-        console.error(`Error during screenshot process for URL: ${url}`);
-        console.error(`Error message: ${error.message}`);
-
-        // Graceful error message if URL couldn't be opened or screenshot couldn't be taken
-        if (page) {
-            console.error(`Failed to navigate or take screenshot for URL: ${url}`);
-        }
-
-        // Return null to indicate failure
-        return null;
-    } finally {
-        // Ensure the browser is always closed, even in case of an error
-        if (browser) {
-            await browser.close();
-            console.log('Browser closed');
-        }
-    }
-};
-
-module.exports = takeScreenshot;
-
+// Export the function for use in other parts of your app
+module.exports = { takeScreenshot };
 
 
 // Modified crawl endpoint
